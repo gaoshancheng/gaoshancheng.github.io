@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>客户&设备管理系统</title>
+    <!-- 引入 Element Plus 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <style>
+        body { margin: 20px; background-color: #f5f7fa; font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif; }
+        .page-container { max-width: 1600px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1); }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .search-bar { display: flex; gap: 15px; margin-bottom: 20px; }
+        .search-bar .el-input { flex: 1; max-width: 800px; }
+        .pagination-container { margin-top: 20px; display: flex; justify-content: flex-end; }
+    </style>
+</head>
+<body>
+
+<div id="app" class="page-container">
+    <!-- 页面头部 -->
+    <div class="page-header">
+        <h1>客户&设备管理系统</h1>
+        <div class="user-info">
+            <el-tag type="info" v-if="userEmail">{{ userEmail }}</el-tag>
+            <el-button type="text" @click="logout" style="margin-left: 10px;">退出</el-button>
+        </div>
+    </div>
+
+    <!-- 标签页 -->
+    <el-tabs v-model="activeTab" @tab-click="handleTabChange">
+        <el-tab-pane label="客户管理" name="customer"></el-tab-pane>
+        <el-tab-pane label="设备管理" name="device"></el-tab-pane>
+    </el-tabs>
+
+    <!-- 搜索与新增 -->
+    <div class="search-bar">
+        <el-input
+            v-model="searchKeyword"
+            placeholder="支持模糊搜索：设备编号、使用单位、联系人、地址、街道、设备状态"
+            clearable
+            @input="getDeviceData"
+        ></el-input>
+        <el-button type="primary" @click="handleAdd">+ 新增设备</el-button>
+    </div>
+
+    <!-- 数据表格 -->
+    <el-table
+        :data="deviceList"
+        border
+        style="width: 100%"
+        v-loading="loading"
+        empty-text="暂无设备数据"
+    >
+        <el-table-column prop="设备代码" label="设备编号" width="200"></el-table-column>
+        <el-table-column prop="使用单位名称" label="使用单位名称" width="220"></el-table-column>
+        <el-table-column prop="联系人姓名" label="联系人姓名" width="140"></el-table-column>
+        <el-table-column prop="使用单位地址" label="使用单位地址" min-width="280"></el-table-column>
+        <el-table-column prop="街道" label="所属街道" width="130"></el-table-column>
+        <el-table-column prop="设备使用状态" label="设备状态" width="120">
+            <template #default="scope">
+                <el-tag v-if="scope.row.设备使用状态 === '在用'" type="success">在用</el-tag>
+                <el-tag v-else type="info">{{ scope.row.设备使用状态 }}</el-tag>
+            </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+            <template #default="scope">
+                <el-button link type="primary" size="small" @click="handleEdit(scope.row)">编辑</el-button>
+                <el-button link type="danger" size="small" @click="handleDelete(scope.row)">删除</el-button>
+            </template>
+        </el-table-column>
+    </el-table>
+
+    <!-- 分页 -->
+    <div class="pagination-container">
+        <el-pagination
+            v-model:current-page="currentPage"
+            v-model:page-size="pageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="total, sizes, prev, pager, next, jumper"
+            :total="total"
+            @size-change="getDeviceData"
+            @current-change="getDeviceData"
+        />
+    </div>
+</div>
+
+<!-- 引入 Vue 和 Element Plus -->
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<!-- 引入 Supabase SDK -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+    const { createApp, ref, onMounted } = Vue;
+
+    // ==================== 配置区域 (请修改此处) ====================
+    const SUPABASE_URL = 'https://ylxzrpwqvlijpvschhgj.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlseHpycHdxdmxpanB2c2NoaGdqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyNTI4ODMsImV4cCI6MjA5MDgyODg4M30.AlBACmZHSzYHtCfpqRQbyxOIGUZV_tuClur8DJjSiFY';
+    // =================================================================
+
+    // 初始化 Supabase
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    createApp({
+        setup() {
+            const activeTab = ref('device');
+            const searchKeyword = ref('');
+            const deviceList = ref([]);
+            const loading = ref(false);
+            const userEmail = ref('');
+            
+            // 分页
+            const currentPage = ref(1);
+            const pageSize = ref(20);
+            const total = ref(0);
+
+            // ==================== 核心数据查询逻辑 ====================
+            const getDeviceData = async () => {
+                loading.value = true;
+                try {
+                    // 1. 构建基础查询
+                    let query = supabase.from('shebei').select('*', { count: 'exact' });
+
+                    // 2. 模糊查询逻辑 (全字段匹配)
+                    if (searchKeyword.value.trim()) {
+                        const keyword = `%${searchKeyword.value.trim()}%`;
+                        query = query.or(`
+                            使用单位名称.ilike.${keyword},
+                            设备代码.ilike.${keyword},
+                            联系人姓名.ilike.${keyword},
+                            使用单位地址.ilike.${keyword},
+                            街道.ilike.${keyword},
+                            设备使用状态.ilike.${keyword}
+                        `);
+                    }
+
+                    // 3. 分页
+                    const start = (currentPage.value - 1) * pageSize.value;
+                    const end = start + pageSize.value - 1;
+                    query = query.range(start, end);
+
+                    // 4. 执行请求
+                    const { data, error, count } = await query;
+
+                    if (error) throw error;
+                    
+                    deviceList.value = data || [];
+                    total.value = count || 0;
+                } catch (error) {
+                    console.error('查询错误:', error);
+                    ElementPlus.ElMessage.error(`获取数据失败: ${error.message}`);
+                } finally {
+                    loading.value = false;
+                }
+            };
+
+            // ==================== 登录校验 ====================
+            const checkAuth = async () => {
+                const { data: { session } } = await supabase.auth.getSession();
+                
+                // 简单演示：如果未登录，为了方便测试，你可以先在Supabase后台注册一个用户
+                // 或者这里直接弹窗提示
+                if (!session) {
+                    // 注意：实际生产环境应跳转到登录页
+                    // 这里为了演示方便，假设你已经通过其他方式登录了
+                    // 如果没有session，这里会一直尝试获取数据但被RLS拦截（如果你配置了authenticated策略）
+                    console.warn('未检测到登录用户，请确保已在Supabase登录。');
+                    // 如果你想测试，可以临时注释掉下面这行，或者把RLS改成允许anon访问
+                } else {
+                    userEmail.value = session.user.email;
+                }
+                
+                getDeviceData();
+            };
+
+            // ==================== 操作事件 ====================
+            const handleTabChange = () => {
+                if (activeTab.value === 'device') {
+                    getDeviceData();
+                }
+            };
+
+            const logout = async () => {
+                await supabase.auth.signOut();
+                userEmail.value = '';
+                ElementPlus.ElMessage.success('已退出登录');
+                // 刷新页面重置状态
+                location.reload();
+            };
+
+            const handleAdd = () => {
+                ElementPlus.ElMessage.info('新增功能：请在此处打开弹窗或跳转页面');
+            };
+
+            const handleEdit = (row) => {
+                console.log('编辑数据:', row);
+                ElementPlus.ElMessage.info(`编辑设备: ${row.设备代码}`);
+            };
+
+            const handleDelete = async (row) => {
+                try {
+                    await ElementPlus.ElMessageBox.confirm(
+                        `确定要删除设备 "${row.设备代码}" 吗？`,
+                        '警告',
+                        { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
+                    );
+                    
+                    // 这里假设 '设备代码' 是主键或唯一标识
+                    const { error } = await supabase.from('shebei').delete().eq('设备代码', row.设备代码);
+                    
+                    if (error) throw error;
+                    ElementPlus.ElMessage.success('删除成功');
+                    getDeviceData(); // 刷新列表
+                } catch (error) {
+                    if (error !== 'cancel') {
+                        ElementPlus.ElMessage.error(`删除失败: ${error.message}`);
+                    }
+                }
+            };
+
+            // 初始化
+            onMounted(() => {
+                checkAuth();
+            });
+
+            return {
+                activeTab,
+                searchKeyword,
+                deviceList,
+                loading,
+                userEmail,
+                currentPage,
+                pageSize,
+                total,
+                handleTabChange,
+                logout,
+                handleAdd,
+                handleEdit,
+                handleDelete,
+                getDeviceData
+            };
+        }
+    }).use(ElementPlus).mount('#app');
+</script>
+
+</body>
+</html>
